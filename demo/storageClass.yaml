@@ -1,0 +1,54 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: instorage01-delete
+provisioner: inspur/instorage
+parameters:
+  volPoolName: Pool0
+reclaimPolicy: Delete
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: instorage01-retain
+provisioner: inspur/instorage
+parameters:
+  volPoolName: Pool0
+  volThin: "true"
+reclaimPolicy: Retain
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: instorage01-thin
+provisioner: inspur/instorage
+parameters:
+  volPoolName: Pool0
+  volThin: "true"
+  volThinResize: "10"
+  volThinGrainSize: "256"
+  volThinWarning: "70"
+reclaimPolicy: Delete
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: instorage01-intier
+provisioner: inspur/instorage
+parameters:
+  volPoolName: Pool0
+  volThin: "true"
+  volInTier: "true"
+reclaimPolicy: Delete
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: instorage01-mirror
+provisioner: inspur/instorage
+parameters:
+  volPoolName: Pool0
+  volAuxPoolName: Pool1
+  volThin: "true"
+  volLevel: mirror
+reclaimPolicy: Delete

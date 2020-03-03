@@ -1,0 +1,32 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: nginx-01
+  labels:
+    app: nginx-01
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-01
+  template:
+    metadata:
+      name: nginx-01
+      labels:
+        app: nginx-01
+    spec:
+      containers:
+        - name: nginx
+          image: nginx
+          volumeMounts:
+            - name: data-001
+              mountPath: /mnt
+            - name: data-002
+              mountPath: /media
+      volumes:
+      - name: data-001
+        persistentVolumeClaim:
+          claimName: pvc-data-001
+      - name: data-002
+        persistentVolumeClaim:
+          claimName: pvc-data-002

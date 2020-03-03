@@ -1,0 +1,12 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: instorage-csi
+provisioner: csi-instorage
+parameters:
+  volPoolName: Pool1
+  volThin: "true"
+  volThinResize: "2"
+  volThinGrainSize: "256"
+  volThinWarning: "20"
+reclaimPolicy: Delete

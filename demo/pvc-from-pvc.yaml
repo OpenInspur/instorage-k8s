@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-from-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: instorage-csi
+  resources:
+    requests:
+      storage: 1Gi
+  volumeMode: Filesystem
+  dataSource:
+    name: csi-pvc-001
+    kind: PersistentVolumeClaim
+

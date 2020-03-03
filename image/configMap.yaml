@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inspur-instorage-01
+data:
+  instorage.yaml: |
+    log:
+      enabled: false
+      logdir: log
+      level: ""
+      logrotatemaxsize: 0
+    host:
+      link: iscsi
+      forceUseMultipath: false
+      scsiScanRetryTimes: 3
+      scsiScanWaitInterval: 1
+      iscsiPathCheckRetryTimes: 3
+      iscsiPathCheckWaitInterval: 1
+      multipathSearchRetryTimes: 3
+      multipathSearchWaitInterval: 1
+      multipathResizeDelay: 1
+    storage:
+    - name: storage-01
+      type: AS18000
+      host: 10.0.0.1:22
+      username: username
+      password: password

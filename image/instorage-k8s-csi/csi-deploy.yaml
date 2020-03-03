@@ -1,0 +1,221 @@
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: instorage-csi-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: instorage-csi-controller
+  template:
+    metadata:
+      labels:
+        app: instorage-csi-controller
+    spec:
+      serviceAccount: instorage-csi-controller
+      containers:
+        - name: csi-provisioner
+          image: quay.io/k8scsi/csi-provisioner:canary
+          args:
+            - "--csi-address=$(ADDRESS)"
+            - "--enable-leader-election"
+          env:
+            - name: ADDRESS
+              value: /csi-plugin/instorage-csi.sock
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi-plugin
+
+        - name: csi-attacher
+          image: quay.io/k8scsi/csi-attacher:canary
+          args:
+            - "--v=5"
+            - "--csi-address=$(ADDRESS)"
+            - "--leader-election"
+          env:
+            - name: ADDRESS
+              value: /csi-plugin/instorage-csi.sock
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi-plugin
+
+        - name: csi-snapshotter
+          image: quay.io/k8scsi/csi-snapshotter:v1.2.2
+          args:
+            - "--csi-address=$(ADDRESS)"
+            #- "--connection-timeout=15s"
+            - "--leader-election=false"
+          env:
+            - name: ADDRESS
+              value: /csi-plugin/instorage-csi.sock
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi-plugin
+
+        - name: csi-resizer
+          image: quay.io/k8scsi/csi-resizer:canary
+          args:
+            - "--v=5"
+            - "--csi-address=$(ADDRESS)"
+            - "--leader-election=false"
+          env:
+            - name: ADDRESS
+              value: /csi-plugin/instorage-csi.sock
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi-plugin
+
+        - name: instorage-csi
+          image: 192.168.1.1:5000/instorage-csi:v1.0.0
+          args:
+            - "--endpoint=unix:/$(CSI_ENDPOINT)"
+            - "--strconfig=$(STR_CONFIG)"
+            - "--nodeid=controller"
+            - "--mode=all-in-one"
+            - "--logtostderr"
+          env:
+            - name: STR_CONFIG
+              value: /opt/instorage-csi/config/instorage.yaml
+            - name: CSI_ENDPOINT
+              value: /csi-plugin/instorage-csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi-plugin
+            - name: str-config
+              mountPath: /opt/instorage-csi/config
+      volumes:
+        - name: socket-dir
+          emptyDir:
+        - name: str-config
+          configMap:
+            name: inspur-instorage-01
+
+---
+kind: DaemonSet
+apiVersion: apps/v1beta2
+metadata:
+  name: instorage-csi-node
+spec:
+  selector:
+    matchLabels:
+      app: instorage-csi-node
+  template:
+    metadata:
+      labels:
+        app: instorage-csi-node
+    spec:
+      serviceAccount: instorage-csi-controller
+      hostIPC: true
+      hostNetwork: true
+      containers:
+        - name: csi-driver-registrar
+          image: quay.io/k8scsi/csi-node-driver-registrar:canary
+          args:
+            - "--csi-address=/csi-plugins/csi-instorage/csi.sock"
+            - "--kubelet-registration-path=/var/lib/kubelet/plugins/csi-instorage/csi.sock"
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "rm -rf /registration/csi-instorage-reg.sock"]
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi-plugins
+            - name: registration-dir
+              mountPath: /registration
+
+        - name: instorage-csi
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["SYS_ADMIN"]
+            allowPrivilegeEscalation: true
+          image: 192.168.1.1:5000/instorage-csi:v1.0.0
+          args:
+            - "--endpoint=unix:/$(CSI_ENDPOINT)"
+            - "--strconfig=$(STR_CONFIG)"
+            - "--nodeid=$(KUBE_NODE_NAME)"
+            - "--mode=nodeworker"
+            - "--logtostderr"
+# if we can not auto create csi-instorage directory, we need create it manualy
+#          lifecycle:
+#            postStart:
+#              exec:
+#                command: ["/bin/sh", "-c", "mkdir -p /csi-plugins/csi-instorage"]
+#            preStop:
+#              exec:
+#                command: ["/bin/sh", "-c", "rm -rf /csi-plugins/csi-instorage"]
+          env:
+            - name: STR_CONFIG
+              value: /opt/instorage-csi/config/instorage.yaml
+            - name: CSI_ENDPOINT
+              value: /csi-plugins/csi-instorage/csi.sock
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi-plugins
+            - name: str-config
+              mountPath: /opt/instorage-csi/config
+            - name: pods-mount-dir
+              mountPath: /var/lib/kubelet/pods
+              mountPropagation: "Bidirectional"
+            - mountPath: /lib/modules
+              name: lib-modules
+            - mountPath: /sys
+              name: sysfs
+            - mountPath: /dev
+              name: dev
+            - mountPath: /run
+              name: run
+            - mountPath: /etc/iscsi
+              name: iscsi-etc
+      volumes:
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry/
+            type: Directory
+        - name: plugin-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/
+            type: DirectoryOrCreate
+        - name: str-config
+          configMap:
+            name: inspur-instorage-01
+        - name: pods-mount-dir
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: Directory
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+            type: Directory
+        - name: sysfs
+          hostPath:
+            path: /sys
+            type: Directory
+        - name: dev
+          hostPath:
+            path: /dev
+            type: Directory
+        - name: run
+          hostPath:
+            path: /run
+            type: Directory
+        - name: iscsi-etc
+          hostPath:
+            path: /etc/iscsi
+            type: Directory

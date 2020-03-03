@@ -1,0 +1,30 @@
+apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+  name: flex-inspur-instorage-ds
+spec:
+  template:
+    metadata:
+      name: flex-inspur-instorage-deploy
+      labels:
+        app: flex-inspur-instorage-deploy
+    spec:
+      containers:
+        # TODO Change to your container registry.
+        - image: "<image_url>"
+          name: flex-inspur-instorage-deploy
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: flexvolume-mount
+              mountPath: /opt/flexmnt
+            - name: config
+              mountPath: /opt/instorage/config
+      volumes:
+        - name: flexvolume-mount
+          hostPath:
+            # TODO Change to the Flexvolume plugin directory of your cluster.
+            path: /usr/libexec/kubernetes/kubelet-plugins/volume/exec/
+        - name: config
+          configMap:
+            name: inspur-instorage-01

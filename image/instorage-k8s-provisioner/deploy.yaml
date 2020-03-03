@@ -1,0 +1,28 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: instorage-provisioner
+  labels:
+    app: instorage-provisioner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: instorage-provisioner
+  template:
+    metadata:
+      name: instorage-provisioner
+      labels:
+        app: instorage-provisioner
+    spec:
+      containers:
+      - name: instorage-provisioner
+        #TODO Change to your container registry.
+        image: "<image_url>"
+        volumeMounts:
+        - name: config
+          mountPath: /opt/instorage/config
+      volumes:
+      - name: config
+        configMap:
+          name: inspur-instorage-01
