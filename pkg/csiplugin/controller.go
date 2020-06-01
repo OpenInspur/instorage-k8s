@@ -3,18 +3,16 @@ package csiplugin
 import (
 	"fmt"
 	"strconv"
-	"time"
-
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/glog"
-	"github.com/golang/protobuf/ptypes"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	timestamp "github.com/golang/protobuf/ptypes/timestamp"
 	"inspur.com/storage/instorage-k8s/pkg/controller"
 	"inspur.com/storage/instorage-k8s/pkg/csiplugin/csicommon"
+	"inspur.com/storage/instorage-k8s/pkg/storage"
+	"github.com/golang/protobuf/ptypes/timestamp"
 )
 
 type controllerServer struct {
@@ -23,81 +21,86 @@ type controllerServer struct {
 }
 
 func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
-	glog.Infof("ControllerServer CreateVolume req: %v", req)
+	glog.Infof("[controllerServer::CreateVolume] req: %v", req)
 	volName := req.GetName()
 
 	capacity := req.GetCapacityRange().GetRequiredBytes()
 	//capacity is size in bytes, transform it to size in Gib
-	capacityValue := (capacity + 1*1024*1024*1024 - 1) / (1 * 1024 * 1024 * 1024)
+	capacityValue := (capacity + 1 * 1024 * 1024 * 1024 - 1) / (1 * 1024 * 1024 * 1024)
 	//volSize is the volume size in Gib
 	volSize := strconv.FormatInt(capacityValue, 10)
-
 	parameters := req.GetParameters()
-
 	volumeContentSource := req.GetVolumeContentSource()
 	var err error = nil
+	var info map[string]string
 	if volumeContentSource == nil {
-		_, err = cs.ctrl.CreateVolume(volName, volSize, parameters)
+		info, err = cs.ctrl.CreateVolume(volName, volSize, parameters)
 	} else {
+		var options map[string]string
 		volumeSource := volumeContentSource.GetVolume()
 		snapshotSource := volumeContentSource.GetSnapshot()
-		var sourveVolumeName string = ""
+		var sourceVolumeName string
 		if volumeSource != nil {
-			sourveVolumeName = volumeSource.GetVolumeId()
+			sourceVolumeName, options, err = csicommon.ParseVolumeID(volumeSource.GetVolumeId())
+			if err != nil {
+				return nil, fmt.Errorf("[controllerServer::CreateVolume] failed to parse volume id, sourceVolumeId: %s, error: %v", volumeSource.GetVolumeId(), err)
+			}
 		}
-		var snapshotName string = ""
+		var snapshotName string
 		if snapshotSource != nil {
-			snapshotName = snapshotSource.GetSnapshotId()
+			snapshotName, options, err = csicommon.ParseVolumeID(snapshotSource.GetSnapshotId())
+			if err != nil {
+				return nil, fmt.Errorf("[controllerServer::CreateVolume] failed to parse volume id, snapshotId: %s, error: %v", snapshotSource.GetSnapshotId(), err)
+			}
 		}
-		_, err = cs.ctrl.CloneVolume(volName, volSize, parameters, sourveVolumeName, snapshotName)
+		info, err = cs.ctrl.CloneVolume(volName, volSize, parameters, sourceVolumeName, snapshotName, options)
 	}
-
 	if err != nil {
-		return nil, fmt.Errorf("create volume %s failed %s", volName, err)
+		return nil, fmt.Errorf("[controllerServer::CreateVolume]  failed to create volume, error: %v", err)
 	}
-
 	vol := &csi.Volume{
 		CapacityBytes: capacity,
-		VolumeId:      volName,
+		VolumeId:      csicommon.GenerateVolumeID(volName, info),
 		ContentSource: volumeContentSource,
 	}
-
 	resp := &csi.CreateVolumeResponse{
 		Volume: vol,
 	}
-
 	return resp, nil
 }
 
 func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
-	glog.Infof("ControllerServer DeleteVolume req: %v", req)
-	volumeID := req.GetVolumeId()
-	options := map[string]string{}
-
-	if err := cs.ctrl.DeleteVolume(volumeID, options); err != nil {
+	glog.Infof("[controllerServer::DeleteVolume] req: %v", req)
+	volumeId := req.GetVolumeId()
+	name, options, err := csicommon.ParseVolumeID(volumeId)
+	if err != nil {
+		return nil, fmt.Errorf("[controllerServer::DeleteVolume] failed to parse volume id, sourceVolumeId: %s, error: %v", volumeId, err)
+	}
+	err = cs.ctrl.DeleteVolume(name, options)
+	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("%s", err))
 	}
-
 	return &csi.DeleteVolumeResponse{}, nil
 }
 
 func (cs *controllerServer) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
-	glog.Infof("ControllerServer ListVolumes req: %v", req)
+	glog.Infof("[controllerServer::ListVolumes] req: %v", req)
 	if err := cs.Driver.ValidateControllerServiceRequest(csi.ControllerServiceCapability_RPC_LIST_VOLUMES); err != nil {
 		return nil, err
 	}
-	if volumeNames, capacitiesBytes, nextID, err := cs.ctrl.ListVolume(req.GetMaxEntries(), req.GetStartingToken()); err != nil {
+	if volumeMap, nextID, err := cs.ctrl.ListVolume(req.GetMaxEntries(), req.GetStartingToken()); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("%s", err))
 	} else {
 		var entries []*csi.ListVolumesResponse_Entry
-		for index, volumeName := range volumeNames {
+		for name, info := range volumeMap {
+			_, capacity := csicommon.ParseCapacitySize(info[storage.VolumeCapacity])
+			delete(info, storage.VolumeCapacity)
 			var entry csi.ListVolumesResponse_Entry
 			entry.Volume = &csi.Volume{
-				VolumeId:      volumeName,
-			    CapacityBytes: capacitiesBytes[index]}
+				VolumeId:      csicommon.GenerateVolumeID(name, info),
+			    CapacityBytes: capacity}
 			entries = append(entries, &entry)
 		}
-
 		return &csi.ListVolumesResponse{
 			Entries:   entries,
 			NextToken: nextID,
@@ -107,35 +110,35 @@ func (cs *controllerServer) ListVolumes(ctx context.Context, req *csi.ListVolume
 
 // ControllerPublishVolume will attach the volume to the specified node
 func (cs *controllerServer) ControllerPublishVolume(ctx context.Context, req *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
-	glog.Infof("ControllerServer ControllerPublishVolume req: %v", req)
+	glog.Infof("[controllerServer::ControllerPublishVolume] req: %v", req)
 	if err := cs.Driver.ValidateControllerServiceRequest(csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME); err != nil {
 		return nil, err
 	}
-	glog.Infof("ControllerServer ControllerPublishVolume nodeId: %s, volumeId: %s", req.GetNodeId(), req.GetVolumeId())
+	glog.Infof("[controllerServer::ControllerPublishVolume] nodeId: %s, volumeId: %s", req.GetNodeId(), req.GetVolumeId())
 	return &csi.ControllerPublishVolumeResponse{}, nil
 }
 
 func (cs *controllerServer) ControllerUnpublishVolume(ctx context.Context, req *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
-	glog.Infof("ControllerServer ControllerUnpublishVolume req: %v", req)
+	glog.Infof("[controllerServer::ControllerUnpublishVolume] req: %v", req)
 	if err := cs.Driver.ValidateControllerServiceRequest(csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME); err != nil {
 		return nil, err
 	}
-	glog.Infof("ControllerServer ControllerUnpublishVolume nodeId: %s, volumeId: %s", req.GetNodeId(), req.GetVolumeId())
+	glog.Infof("[controllerServer::ControllerUnpublishVolume], nodeId: %s, volumeId: %s", req.GetNodeId(), req.GetVolumeId())
 
 	volumeName := req.GetVolumeId()
 	hostname := req.GetNodeId()
 	err := cs.ctrl.Detach(hostname, volumeName, false)
 	if err != nil {
-		glog.Errorf("Exit DetachCmd exec with error:%+v", err)
+		glog.Errorf("[controllerServer::ControllerUnpublishVolume], Exit DetachCmd exec with error:%+v", err)
 		return nil, err
 	} else {
-		glog.Debugf("Exit DetachCmd exec")
+		glog.Debugf("[controllerServer::ControllerUnpublishVolume], Exit DetachCmd exec")
 		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
 }
 
 func (cs *controllerServer) ValidateVolumeCapabilities(ctx context.Context, req *csi.ValidateVolumeCapabilitiesRequest) (*csi.ValidateVolumeCapabilitiesResponse, error) {
-	glog.Infof("ControllerServer ValidateVolumeCapabilities req: %v", req)
+	glog.Infof("[controllerServer::ValidateVolumeCapabilities] req: %v", req)
 	volumeCapabilities := req.GetVolumeCapabilities()
 	for _, capability := range volumeCapabilities {
 		if capability.GetAccessMode() == nil {
@@ -154,14 +157,14 @@ func (cs *controllerServer) ValidateVolumeCapabilities(ctx context.Context, req 
 }
 
 func (cs *controllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
-	glog.Infof("ControllerServer GetCapacity req: %v", req)
+	glog.Infof("[controllerServer::GetCapacity] req: %v", req)
 	if err := cs.Driver.ValidateControllerServiceRequest(csi.ControllerServiceCapability_RPC_GET_CAPACITY); err != nil {
 		return nil, err
 	}
 	parameters := req.GetParameters()
 	availableCapacity, err := cs.ctrl.GetCapacity(parameters)
 	if err != nil {
-		return nil, fmt.Errorf("get capacity %s failed %s", parameters, err)
+		return nil, fmt.Errorf("[controllerServer::GetCapacity] failed to get capacity, error: %v", err)
 	}
 	resp := &csi.GetCapacityResponse{
 		AvailableCapacity: availableCapacity,
@@ -170,35 +173,40 @@ func (cs *controllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacit
 }
 
 func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
-	glog.Infof("ControllerServer CreateSnapshot req: %v", req)
+	glog.Infof("[controllerServer::CreateSnapshot] req: %v", req)
 	if err := cs.Driver.ValidateControllerServiceRequest(csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT); err != nil {
 		return nil, err
 	}
-
-	sourceVolName := req.GetSourceVolumeId()
-	snapshotName := req.GetName()
-	readyToUse, ctimeStr, err := cs.ctrl.CreateSnapshot(sourceVolName, snapshotName)
+	sourceVolumeId := req.GetSourceVolumeId()
+	srcVolName, options, err := csicommon.ParseVolumeID(req.GetSourceVolumeId())
 	if err != nil {
-		return nil, fmt.Errorf("create snapshot %s failed %s", snapshotName, err)
+		return nil, fmt.Errorf("[controllerServer::CreateSnapshot] failed to parse volume id, sourceVolumeId: %s, error: %v", sourceVolumeId, err)
 	}
-
-	var ctimeStamp *timestamp.Timestamp = nil
-	if len(ctimeStr) == 12 {
-		stdCtimeStr := "20" + ctimeStr[0:2] + "-" + ctimeStr[2:4] + "-" + ctimeStr[4:6] + " " + ctimeStr[6:8] + ":" + ctimeStr[8:10] + ":" + ctimeStr[10:12]
-		template := "2006-01-02 15:04:05"
-		ctime, errParse := time.ParseInLocation(template, stdCtimeStr, time.Local)
-		if errParse == nil {
-			ctimeStamp, _ = ptypes.TimestampProto(ctime)
+	snapshotName := req.GetName()
+	info, err := cs.ctrl.CreateSnapshot(srcVolName, snapshotName, options)
+	if err != nil {
+		return nil, fmt.Errorf("[controllerServer::CreateSnapshot] failed to create snapshot, srcVolName: %s, snapshotName: %s, error: %v", srcVolName, snapshotName, err)
+	}
+	var timeStamp *timestamp.Timestamp
+	var readyToUse bool
+	if info != nil {
+		timeStamp, err = csicommon.ConvertStrToTime(info[storage.SnapshotCreateTime])
+		if err != nil {
+			return nil, fmt.Errorf("[controllerServer::CreateSnapshot] failed to create snapshot, snapshotName: %s, error: %v", snapshotName, err)
 		}
+		readyToUse, err = strconv.ParseBool(info[storage.SnapshotReadyToUse])
+		if err != nil {
+			return nil, fmt.Errorf("[controllerServer::CreateSnapshot] failed to create snapshot, snapshotName: %s, error: %v", snapshotName, err)
+		}
+		delete(info, storage.SnapshotCreateTime)
+		delete(info, storage.SnapshotReadyToUse)
 	}
-
 	snapshot := &csi.Snapshot{
-		SnapshotId:     snapshotName,
-		SourceVolumeId: sourceVolName,
+		SnapshotId:     csicommon.GenerateVolumeID(snapshotName, info),
+		SourceVolumeId: sourceVolumeId,
 		ReadyToUse:     readyToUse,
-		CreationTime:   ctimeStamp,
+		CreationTime:   timeStamp,
 	}
-
 	resp := &csi.CreateSnapshotResponse{
 		Snapshot: snapshot,
 	}
@@ -207,11 +215,16 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 }
 
 func (cs *controllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
-	glog.Infof("ControllerServer DeleteSnapshot req: %v", req)
+	glog.Infof("[controllerServer::DeleteSnapshot] req: %v", req)
 	if err := cs.Driver.ValidateControllerServiceRequest(csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT); err != nil {
 		return nil, err
 	}
-	err := cs.ctrl.DeleteSnapshot(req.GetSnapshotId())
+	snapshotId := req.GetSnapshotId()
+	snapshotName, options, err := csicommon.ParseVolumeID(snapshotId)
+	if err != nil {
+		return nil, fmt.Errorf("[controllerServer::DeleteSnapshot] failed to snapshot id, snapshotId: %s, error: %v", snapshotId, err)
+	}
+	err = cs.ctrl.DeleteSnapshot(snapshotName, options)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("%s", err))
 	}
@@ -220,25 +233,33 @@ func (cs *controllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteS
 }
 
 func (cs *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
-	glog.Infof("ControllerServer ListSnapshots req: %v", req)
+	glog.Infof("[controllerServer::ListSnapshots] req: %v", req)
 	if err := cs.Driver.ValidateControllerServiceRequest(csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS); err != nil {
 		return nil, err
 	}
 	sourceVolumeId := req.GetSourceVolumeId()
-	if snapshotIds, sourcevolIds, nextID, err := cs.ctrl.ListSnapshots(req.GetMaxEntries(), req.GetStartingToken(), sourceVolumeId); err != nil {
+	srcVolName, options, err := csicommon.ParseVolumeID(req.GetSourceVolumeId())
+	if err != nil {
+		return nil, fmt.Errorf("[controllerServer::ListSnapshots] failed to parse volume id, sourceVolumeId: %s, error: %v", sourceVolumeId, err)
+	}
+	if snapshotMap, nextID, err := cs.ctrl.ListSnapshots(req.GetMaxEntries(), req.GetStartingToken(), srcVolName, options); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("%s", err))
 	} else {
-		ctime := ptypes.TimestampNow()
 		var entries []*csi.ListSnapshotsResponse_Entry
-		for index, snapshotId := range snapshotIds {
+		for snapshotName, info := range snapshotMap {
+			timeStamp, errConvert := csicommon.ConvertStrToTime(info[storage.SnapshotCreateTime])
+			if errConvert != nil {
+				glog.Warning("[controllerServer::ListSnapshots] failed to convert string to time, %s, %v", info[storage.SnapshotCreateTime], errConvert)
+				timeStamp = nil
+			}
+			delete(info, storage.SnapshotCreateTime)
 			var entry csi.ListSnapshotsResponse_Entry
 			entry.Snapshot = &csi.Snapshot{
-				SourceVolumeId: sourcevolIds[index],
-				SnapshotId:     snapshotId,
-				CreationTime:   ctime}
+				SourceVolumeId: req.GetSourceVolumeId(),
+				SnapshotId:     csicommon.GenerateVolumeID(snapshotName, info),
+				CreationTime:  timeStamp}
 			entries = append(entries, &entry)
 		}
-
 		return &csi.ListSnapshotsResponse{
 			Entries:   entries,
 			NextToken: nextID,

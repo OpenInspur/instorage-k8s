@@ -20,6 +20,16 @@ const (
 
 	SharePoolName     = "sharePoolName"
 	ShareAccessClient = "shareAccessClient"
+
+	VolumeCapacity    = "volumeCapacity"
+
+	SnapshotSourceName = "sn"
+	SnapshotPoolName   = "pn"
+	SnapshotCreateTime = "snapshotCreateTime"
+	SnapshotReadyToUse = "snapshotReadyToUse"
+
+	True  = "true"
+	False = "false"
 )
 
 // ConnProperty contain the LUN's connect info which is used to search the device on host.
@@ -58,13 +68,13 @@ type IStorageOperater interface {
 	GetVolumeAttachInfo(volumeName string, hostInfo HostInfo) (*ConnProperty, error)
 	GetVolumeNameWithUID(uid string) (string, error)
 	CreateVolume(name string, size string, options map[string]string) (map[string]string, error)
-	CloneVolume(name string, size string, options map[string]string, sourceVolumeName string, snapshotName string) (map[string]string, error)
+	CloneVolume(name string, size string, parameters map[string]string, sourceVolumeName string, snapshotName string, options map[string]string) (map[string]string, error)
 	DeleteVolume(volumeName string, options map[string]string) error
 	ExtendVolume(name string, size string, options map[string]string) error
 	NeedFreezeFSWhenExtend(volumeName string, options map[string]string) bool
-	ListVolume(maxEnties int32, startingToken string) ([]string, []int64, string, error)
+	ListVolume(maxEnties int32, startingToken string) (map[string]map[string]string, string, error)
 	GetCapacity(options map[string]string) (int64, error)
-	CreateSnapshot(sourceVolName string, snapshotName string) (bool, string, error)
-	DeleteSnapshot(snapshotId string) error
-	ListSnapshots(maxEnties int32, startingToken string, sourceVolName string) ([]string, []string, string, error)
+	CreateSnapshot(sourceVolName string, snapshotName string, options map[string]string) (map[string]string, error)
+	DeleteSnapshot(snapshotId string, options map[string]string) error
+	ListSnapshots(maxEnties int32, startingToken string, sourceVolName string, options map[string]string) (map[string]map[string]string, string, error)
 }

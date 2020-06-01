@@ -154,3 +154,23 @@ type ResponseNullObject struct {
 	BaseResponse
 	Data string `json:"data"`
 }
+
+type ResponseQuerySnap struct {
+	BaseResponse
+	Data DataSnap `json:"data"`
+}
+
+type DataSnap struct {
+	Snap []SnapList `json:"snapList"`
+}
+
+type SnapList struct {
+	ID                string `json:"id"`
+	Name              string    `json:"name"`
+	CreateTime        string `json:"createTime"`
+	Size              string `json:"size"`
+	LockedState       int `json:"lockedState"`
+	OccupySize        string `json:"occupySize"`
+	SnapType          string `json:"snapType"`
+	MapState          int `json:"mapState"`
+}

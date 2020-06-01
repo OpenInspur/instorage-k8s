@@ -163,6 +163,10 @@ do
         mkdir -p $DEPLOY_DIR
         cp ../image/configMap.yaml $DEPLOY_DIR
         cp ../image/instorage-k8s-csi/* $DEPLOY_DIR
+        rm $DEPLOY_DIR/Dockerfile
+        cp ../image/instorage-k8s-csi/Dockerfile $CSIDRIVER_DIR
+
+
     fi
 
     # archive the plugin

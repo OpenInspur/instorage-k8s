@@ -20,13 +20,13 @@ type IController interface {
 	CreateVolume(name string, size string, options map[string]string) (map[string]string, error)
 
 	// CloneVolume create a volume with given name and size, together with specific option, or sourceVolumeName, or snapshotName
-	CloneVolume(name string, size string, options map[string]string, sourceVolumeName string, snapshotName string) (map[string]string, error)
+	CloneVolume(name string, size string, parameters map[string]string, sourceVolumeName string, snapshotName string, options map[string]string) (map[string]string, error)
 
 	//DeleteVolume delete a volume with a given name
 	DeleteVolume(name string, options map[string]string) error
 
 	//ListVolume list volumes with a given maxEnties and a given startingToken
-	ListVolume(maxEnties int32, startingToken string) ([]string, []int64, string, error)
+	ListVolume(maxEnties int32, startingToken string) (map[string]map[string]string, string, error)
 	// GetCapacity get capacity of a given storage pool
 	GetCapacity(options map[string]string) (int64, error)
 
@@ -41,11 +41,11 @@ type IController interface {
 	//UnMountDevice unmount the device which have mounted to the mountPath and then detach the volume
 	UnMountDevice(mountPath string) (string, error)
 	// CreateSnapshot from source volume
-	CreateSnapshot(sourceVolName string, snapshotName string) (bool, string, error)
+	CreateSnapshot(sourceVolName string, snapshotName string, options map[string]string) (map[string]string, error)
 	// DeleteSnapshot  with a given name
-	DeleteSnapshot(snapshotId string) error
+	DeleteSnapshot(snapshotId string, options map[string]string) error
 	//ListSnapshots list snapshots with a given maxEnties and a given startingToken
-	ListSnapshots(maxEnties int32, startingToken string, sourceVolName string) ([]string, []string, string, error)
+	ListSnapshots(maxEnties int32, startingToken string, sourceVolName string, options map[string]string) (map[string]map[string]string, string, error)
 	//ExtendVolume extend the given volume online
 	ExtendVolume(name string, newSize string, oldSize string, devPath string, devMountPath string, options map[string]string) error
 	//GetVolumeStats with given volume online
@@ -219,17 +219,36 @@ func (c *controller) Detach(hostname string, volumeName string, detachOnHost boo
 //MountDevice mount the volume to given mountPath
 func (c *controller) MountDevice(volumeName string, mountPath string, fsType string, options map[string]string) (string, error) {
 	//first do an attach
-	devPath, err := c.Attach("", volumeName, map[string]string{})
-	if err != nil {
-		return "", fmt.Errorf("attach device failed for %s", devPath)
-	}
+	var devPath string
+	if fsType != "nfs" { //need attach: is AS18000 storage, or AS13000 block
+		devPath, err := c.Attach("", volumeName, options)
+		if err != nil {
+			return "", fmt.Errorf("attach device failed for %s", devPath)
+		}
+		//then mount the dev to mount path
+		m := host.Mounter{}
+		if err := m.FormatAndMount(devPath, mountPath, fsType, []string{}); err != nil {
+			return "", fmt.Errorf("mount device failed for %s", err)
+		}
+	} else {
+		server := options["server"]
+		sharedir := options["path"]
+		devPath = fmt.Sprintf("%s:%s", server, sharedir)
+		glog.Infof("Mount %s to %s", devPath, mountPath)
+		m := host.Mounter{}
+		mntDevice, err := m.GetDevice(mountPath)
+		if err != nil { //not mount
+			if err := m.Mount(devPath, mountPath, fsType, []string{}); err != nil {
+				return "", fmt.Errorf("mount nfs failed for %s", err)
+			}
+		} else { //mounted
+			if devPath != mntDevice {
+				return "", fmt.Errorf("mount nfs failed for %s has mounted to $s", mntDevice, mountPath)
+			}
+			return devPath, nil
+		}
 
-	//then mount the dev to mount path
-	m := host.Mounter{}
-	if err := m.FormatAndMount(devPath, mountPath, fsType, []string{}); err != nil {
-		return "", fmt.Errorf("mount device failed for %s", err)
 	}
-
 	return devPath, nil
 }
 
@@ -279,19 +298,19 @@ func (c *controller) CreateVolume(name string, size string, options map[string]s
 	return c.strUtil.CreateVolume(name, size, options)
 }
 
-func (c *controller) CloneVolume(name string, size string, options map[string]string, sourceVolumeName string, snapshotName string) (map[string]string, error) {
-	return c.strUtil.CloneVolume(name, size, options, sourceVolumeName, snapshotName)
+func (c *controller) CloneVolume(name string, size string, parameters map[string]string, sourceVolumeName string, snapshotName string, options map[string]string) (map[string]string, error) {
+	return c.strUtil.CloneVolume(name, size, parameters, sourceVolumeName, snapshotName, options)
 }
 
 func (c *controller) DeleteVolume(name string, options map[string]string) error {
 	return c.strUtil.DeleteVolume(name, options)
 }
 
-func (c *controller) ListSnapshots(maxEnties int32, startingToken string, sourceVolName string) ([]string, []string, string, error) {
-	return c.strUtil.ListSnapshots(maxEnties, startingToken, sourceVolName)
+func (c *controller) ListSnapshots(maxEnties int32, startingToken string, sourceVolName string, options map[string]string) (map[string]map[string]string, string, error) {
+	return c.strUtil.ListSnapshots(maxEnties, startingToken, sourceVolName, options)
 }
 
-func (c *controller) ListVolume(maxEnties int32, startingToken string) ([]string, []int64, string, error) {
+func (c *controller) ListVolume(maxEnties int32, startingToken string) (map[string]map[string]string, string, error) {
 	return c.strUtil.ListVolume(maxEnties, startingToken)
 }
 
@@ -299,11 +318,11 @@ func (c *controller) GetCapacity(options map[string]string) (int64, error) {
 	return c.strUtil.GetCapacity(options)
 }
 
-func (c *controller) CreateSnapshot(sourceVolName string, snapshotName string) (bool, string, error) {
-	return c.strUtil.CreateSnapshot(sourceVolName, snapshotName)
+func (c *controller) CreateSnapshot(sourceVolName string, snapshotName string, options map[string]string) (map[string]string, error) {
+	return c.strUtil.CreateSnapshot(sourceVolName, snapshotName, options)
 }
-func (c *controller) DeleteSnapshot(snapshotId string) error {
-	return c.strUtil.DeleteSnapshot(snapshotId)
+func (c *controller) DeleteSnapshot(snapshotId string, options map[string]string) error {
+	return c.strUtil.DeleteSnapshot(snapshotId, options)
 }
 
 func (c *controller) GetVolumeStats(volumePath string) (int64, int64, int64, error) {

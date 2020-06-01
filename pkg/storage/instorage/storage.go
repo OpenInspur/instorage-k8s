@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
 	"github.com/golang/glog"
 	"inspur.com/storage/instorage-k8s/pkg/storage"
 	"inspur.com/storage/instorage-k8s/pkg/utils"
+	"math"
 )
 
 //StorageUtil encapulate the general operation with a storage
@@ -276,10 +276,10 @@ func (u *StorageUtil) CreateVolume(name string, size string, options map[string]
 	return info, nil
 }
 
-func (u *StorageUtil) CloneVolume(name string, size string, options map[string]string, sourceVolumeName string, snapshotName string) (map[string]string, error) {
+func (u *StorageUtil) CloneVolume(name string, size string, parameters map[string]string, sourceVolumeName string, snapshotName string, options map[string]string) (map[string]string, error) {
 	glog.Infof("CloneVolume, name: %s, size: %s, sourceVolumeName: %s, snapshotName: %s", name, size, sourceVolumeName, snapshotName)
 	// 1 check options
-	level, ok := options[storage.VolLevel]
+	level, ok := parameters[storage.VolLevel]
 	if ok {
 		if level == "aa" {
 			return nil, fmt.Errorf("CloneVolume, activeactive unsupported.")
@@ -292,7 +292,7 @@ func (u *StorageUtil) CloneVolume(name string, size string, options map[string]s
 	}
 
 	// 3 create volume
-	info, err := u.CreateVolume(name, size, options)
+	info, err := u.CreateVolume(name, size, parameters)
 	if err != nil {
 		return info, err
 	}
@@ -362,9 +362,10 @@ func (u *StorageUtil) DeleteVolume(volumeName string, options map[string]string)
 }
 
 //ListVolume list volumes with a given maxEnties and a given startingToken
-func (u *StorageUtil) ListVolume(maxEnties int32, startingToken string) ([]string, []int64, string, error) {
-	var volumeNames []string
-	var capacitiesBytes []int64
+func (u *StorageUtil) ListVolume(maxEnties int32, startingToken string) (map[string]map[string]string, string, error) {
+	volumeMap := map[string]map[string]string{}
+	// var volumeNames []string
+	// var capacitiesBytes []int64
 	var nextID string
 
 	// 1 init maxCount and startingID
@@ -377,7 +378,7 @@ func (u *StorageUtil) ListVolume(maxEnties int32, startingToken string) ([]strin
 		startingTokenInt, err := strconv.Atoi(startingToken)
 		if err != nil {
 			glog.Warningf("ListVolume, fail to Atoi startingToken: %s.", startingToken)
-			return volumeNames, capacitiesBytes, nextID, err
+			return volumeMap, nextID, err
 		}
 		startID = startingTokenInt
 	}
@@ -385,10 +386,10 @@ func (u *StorageUtil) ListVolume(maxEnties int32, startingToken string) ([]strin
 	// 2 query from storage
 	rows, err := u.cliWrapper.lsvdiskEx()
 	if err != nil {
-		return volumeNames, capacitiesBytes, nextID, err
+		return volumeMap, nextID, err
 	}
 	if len(rows) == 0 {
-		return volumeNames, capacitiesBytes, nextID, nil
+		return volumeMap, nextID, nil
 	}
 	for _, row := range rows {
 		id, err := strconv.Atoi(row["id"])
@@ -399,16 +400,19 @@ func (u *StorageUtil) ListVolume(maxEnties int32, startingToken string) ([]strin
 		if id < startID {
 			continue
 		}
-		if int32(len(volumeNames)) < maxCount {
-			_, capacity := u.parseStrSize(row["capacity"])
-			volumeNames = append(volumeNames, row["name"])
-			capacitiesBytes = append(capacitiesBytes, capacity)
-		} else if int32(len(volumeNames)) == maxCount {
+		if int32(len(volumeMap)) < maxCount {
+			// _, capacity := u.parseStrSize(row["capacity"])
+			// volumeNames = append(volumeNames, row["name"])
+			// capacitiesBytes = append(capacitiesBytes, capacity)
+			info := map[string]string{}
+			info[storage.VolumeCapacity] = row["capacity"]
+			volumeMap[row["name"]] = info
+		} else if int32(len(volumeMap)) == maxCount {
 			nextID = row["id"]
 			break
 		}
 	}
-	return volumeNames, capacitiesBytes, nextID, nil
+	return volumeMap, nextID, nil
 }
 
 func (u *StorageUtil) GetCapacity(options map[string]string) (int64, error) {
@@ -430,23 +434,26 @@ func (u *StorageUtil) GetCapacity(options map[string]string) (int64, error) {
 	}
 }
 
-func (u *StorageUtil) CreateSnapshot(sourceVolName string, snapshotName string) (bool, string, error) {
+func (u *StorageUtil) CreateSnapshot(sourceVolName string, snapshotName string, optionIgnore map[string]string) (map[string]string, error) {
+	info := map[string]string{}
+	info[storage.SnapshotReadyToUse] = storage.False
 	// 0 check snapshot
 	rows, err := u.cliWrapper.lslcmapEx("target_vdisk_name", snapshotName)
 	if err != nil {
-		return false, "", err
+		return info, err
 	}
 	if len(rows) != 0 {
 		snapshot := rows[0]
 		if snapshot["source_vdisk_name"] == sourceVolName {
 			id := snapshot["id"]
-			// status := snapshot["status"]
 			startTime := snapshot["start_time"]
+			info[storage.SnapshotCreateTime] = u.getStdTimeStr(startTime)
 			if /*status == "idle_or_copied" && */ startTime != "" {
-				return true, startTime, nil
+				info[storage.SnapshotReadyToUse] = storage.True
+				return info, nil
 			} else {
 				u.cliWrapper.startlcmap(id)
-				return false, startTime, nil
+				return info, nil
 			}
 		}
 	}
@@ -454,27 +461,27 @@ func (u *StorageUtil) CreateSnapshot(sourceVolName string, snapshotName string) 
 	// 1  get source volume
 	rows, err = u.cliWrapper.lsvdisk("volume_name", sourceVolName)
 	if err != nil {
-		return false, "", err
+		return info, err
 	}
 	switch len(rows) {
 	case 0:
-		return false, "", fmt.Errorf("volume %s does not exist.", sourceVolName)
+		return info, fmt.Errorf("volume %s does not exist.", sourceVolName)
 	case 1:
 		break
 	case 4:
-		return false, "", fmt.Errorf("volume %s is aa, unsupported.", sourceVolName)
+		return info, fmt.Errorf("volume %s is aa, unsupported.", sourceVolName)
 	default:
-		return false, "", fmt.Errorf("volumes with volume name %s count invalid", sourceVolName)
+		return info, fmt.Errorf("volumes with volume name %s count invalid", sourceVolName)
 	}
 
 	// 2 create target volume
 	rows, err = u.cliWrapper.lsvdiskDetail(sourceVolName)
 	if err != nil {
-		return false, "", err
+		return info, err
 	}
 	row_count := len(rows)
 	if row_count != 2 && row_count != 3 {
-		return false, "", fmt.Errorf("row_count of volume %s is not 2 or 3.", sourceVolName)
+		return info, fmt.Errorf("row_count of volume %s is not 2 or 3.", sourceVolName)
 	}
 	options := make(map[string]string)
 	options[storage.VolLevel] = "basic"
@@ -487,14 +494,14 @@ func (u *StorageUtil) CreateSnapshot(sourceVolName string, snapshotName string) 
 	size, _ := u.parseStrSize(rows[0]["capacity"])
 	_, errCreateVolume := u.CreateVolume(snapshotName, size, options)
 	if errCreateVolume != nil {
-		return false, "", errCreateVolume
+		return info, errCreateVolume
 	}
 
 	// 3 make lcmap
 	lcmapId, errMKLcmap := u.cliWrapper.mklcmap(sourceVolName, snapshotName, "0", "0", false)
 	if errMKLcmap != nil {
 		u.cliWrapper.rmvdisk(snapshotName, true)
-		return false, "", errMKLcmap
+		return info, errMKLcmap
 	}
 
 	// 4 start lcmap
@@ -502,7 +509,7 @@ func (u *StorageUtil) CreateSnapshot(sourceVolName string, snapshotName string) 
 	if errStartLcmap != nil {
 		u.cliWrapper.rmlcmap(lcmapId, true)
 		u.cliWrapper.rmvdisk(snapshotName, true)
-		return false, "", errStartLcmap
+		return info, errStartLcmap
 	}
 
 	// 5 get createTime
@@ -511,24 +518,23 @@ func (u *StorageUtil) CreateSnapshot(sourceVolName string, snapshotName string) 
 		u.cliWrapper.stoplcmap(lcmapId, true)
 		u.cliWrapper.rmlcmap(lcmapId, true)
 		u.cliWrapper.rmvdisk(snapshotName, true)
-		return false, "", err
+		return info, err
 	}
-	startTime := ""
 	if len(rows) != 0 {
 		snapshot := rows[0]
 		if snapshot["source_vdisk_name"] == sourceVolName {
-			startTime = snapshot["start_time"]
+			info[storage.SnapshotCreateTime] = u.getStdTimeStr(snapshot["start_time"])
 		} else {
 			u.cliWrapper.stoplcmap(lcmapId, true)
 			u.cliWrapper.rmlcmap(lcmapId, true)
 			u.cliWrapper.rmvdisk(snapshotName, true)
 		}
 	}
-
-	return true, startTime, nil
+	info[storage.SnapshotReadyToUse] = storage.True
+	return info, nil
 }
 
-func (u *StorageUtil) DeleteSnapshot(snapshotId string) error {
+func (u *StorageUtil) DeleteSnapshot(snapshotId string, options map[string]string) error {
 	// 1  get snapshot
 	rows, err := u.cliWrapper.lslcmapEx("target_vdisk_name", snapshotId)
 	if err != nil {
@@ -576,40 +582,35 @@ func (u *StorageUtil) DeleteSnapshot(snapshotId string) error {
 	return u.cliWrapper.rmvdisk(snapshotId, true)
 }
 
-func (u *StorageUtil) ListSnapshots(maxEnties int32, startingToken string, sourceVolName string) ([]string, []string, string, error) {
-	var snapshotvolNames []string
-	var sourcevolNames []string
+func (u *StorageUtil) ListSnapshots(maxEnties int32, startingToken string, sourceVolName string, options map[string]string) (map[string]map[string]string, string, error) {
+	snapshotMap := map[string]map[string]string{}
 	var nextID string
 	var rows []CLIRow
 	var err error
 
 	// 1 init maxCount and startingID
-	var maxCount int32 = 64
-	if maxEnties > 0 {
-		maxCount = maxEnties
-	}
+	maxCount := int(math.Min(64, float64(maxEnties)))
 	var startID = -1
 	if startingToken != "" {
 		startingTokenInt, err := strconv.Atoi(startingToken)
 		if err != nil {
-			glog.Warningf("ListSnapshots, fail to Atoi startingToken: %s.", startingToken)
-			return snapshotvolNames, sourcevolNames, nextID, err
+			glog.Warningf("[StorageUtil::ListSnapshots] fail to Atoi startingToken: %s.", startingToken)
+			return snapshotMap, nextID, err
 		}
 		startID = startingTokenInt
 	}
 
 	// 2 query from storage
 	if sourceVolName == "" {
-		rows, err = u.cliWrapper.lslcmap()
-	} else {
-		rows, err = u.cliWrapper.lslcmapEx("source_vdisk_name", sourceVolName)
+		return snapshotMap, nextID, fmt.Errorf("[StorageUtil::ListSnapshots] source volume is empty")
 	}
+	rows, err = u.cliWrapper.lslcmapEx("source_vdisk_name", sourceVolName)
 
 	if err != nil {
-		return snapshotvolNames, sourcevolNames, nextID, err
+		return snapshotMap, nextID, err
 	}
 	if len(rows) == 0 {
-		return snapshotvolNames, sourcevolNames, nextID, nil
+		return snapshotMap, nextID, nil
 	}
 	for _, row := range rows {
 		id, err := strconv.Atoi(row["id"])
@@ -620,15 +621,16 @@ func (u *StorageUtil) ListSnapshots(maxEnties int32, startingToken string, sourc
 		if id < startID {
 			continue
 		}
-		if int32(len(snapshotvolNames)) < maxCount {
-			snapshotvolNames = append(snapshotvolNames, row["target_vdisk_name"])
-			sourcevolNames = append(sourcevolNames, row["source_vdisk_name"])
-		} else if int32(len(snapshotvolNames)) == maxCount {
+		if len(snapshotMap) < maxCount {
+			info := map[string]string{}
+			info[storage.SnapshotCreateTime] = u.getStdTimeStr(row["start_time"])
+			snapshotMap[row["target_vdisk_name"]] = info
+		} else {
 			nextID = row["id"]
 			break
 		}
 	}
-	return snapshotvolNames, sourcevolNames, nextID, nil
+	return snapshotMap, nextID, nil
 }
 
 func (u *StorageUtil) parseStrSize(capacity string) (string, int64) {
@@ -1375,4 +1377,11 @@ func (u *StorageUtil) DetachVolume(volumeName string, hostInfo storage.HostInfo)
 
 	glog.Info(fmt.Sprintf("other volume mapped to host %s, do nothing", hostName))
 	return nil
+}
+
+func (u *StorageUtil) getStdTimeStr(timeStr string) string {
+	if len(timeStr) == 12 {
+		return "20" + timeStr[0:2] + "-" + timeStr[2:4] + "-" + timeStr[4:6] + " " + timeStr[6:8] + ":" + timeStr[8:10] + ":" + timeStr[10:12]
+	}
+	return timeStr
 }
