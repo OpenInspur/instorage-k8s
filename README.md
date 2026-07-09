@@ -10,3 +10,7 @@ and attach it to workloads.
 
 ## Code of conduct
 Participation in the Kubernetes community is governed by the [Kubernetes Code of Conduct](code-of-conduct.md).
+
+## Function
+- Support for interfacing with block storage of Inspur centralized storage.
+- Support for interfacing with block storage of Inspur distributed storage.
